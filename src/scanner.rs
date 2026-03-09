@@ -7,6 +7,8 @@ use rayon::prelude::*;
 
 use crate::model::{DirNode, FileEntry};
 
+const FILE_STORE_LIMIT: usize = 200;
+
 #[derive(Clone)]
 pub struct ScanProgress {
     dirs: Arc<AtomicU64>,
@@ -69,6 +71,7 @@ fn scan_recursive(path: &Path, progress: &ScanProgress) -> DirNode {
     let mut file_count: u64 = 0;
     let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
     let mut files: Vec<FileEntry> = Vec::new();
+    let mut min_kept: u64 = 0;
     let mut errors: Vec<String> = Vec::new();
 
     for entry in entries {
@@ -81,11 +84,19 @@ fn scan_recursive(path: &Path, progress: &ScanProgress) -> DirNode {
                         let size = meta.len();
                         own_size += size;
                         file_count += 1;
-                        files.push(FileEntry {
-                            name: entry.file_name().to_string_lossy().into_owned(),
-                            size,
-                        });
                         progress.files.fetch_add(1, Ordering::Relaxed);
+
+                        if files.len() < FILE_STORE_LIMIT || size > min_kept {
+                            files.push(FileEntry {
+                                name: entry.file_name().to_string_lossy().into_owned(),
+                                size,
+                            });
+                            if files.len() >= FILE_STORE_LIMIT * 2 {
+                                files.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+                                files.truncate(FILE_STORE_LIMIT);
+                                min_kept = files.last().map(|f| f.size).unwrap_or(0);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -97,6 +108,7 @@ fn scan_recursive(path: &Path, progress: &ScanProgress) -> DirNode {
     }
 
     files.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+    files.truncate(FILE_STORE_LIMIT);
 
     let mut children: Vec<DirNode> = subdirs
         .par_iter()

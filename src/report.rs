@@ -49,8 +49,7 @@ fn print_children<W: Write>(
 
     let mut display: Vec<&TreeEntry> = Vec::new();
     let mut files_shown: usize = 0;
-    let mut hidden_count: usize = 0;
-    let mut hidden_size: u64 = 0;
+    let mut files_shown_size: u64 = 0;
 
     for entry in &entries {
         match entry {
@@ -59,15 +58,15 @@ fn print_children<W: Write>(
                 if files_shown < FILE_DISPLAY_LIMIT {
                     display.push(entry);
                     files_shown += 1;
-                } else {
-                    hidden_count += 1;
-                    hidden_size += f.size;
+                    files_shown_size += f.size;
                 }
             }
         }
     }
 
-    let has_cutoff = hidden_count > 0;
+    let total_hidden_count = (node.own_file_count as usize).saturating_sub(files_shown);
+    let total_hidden_size = node.own_size.saturating_sub(files_shown_size);
+    let has_cutoff = total_hidden_count > 0;
 
     for (i, entry) in display.iter().enumerate() {
         let is_last = !has_cutoff && i == display.len() - 1;
@@ -102,10 +101,10 @@ fn print_children<W: Write>(
             out,
             "{}",
             format!(
-                "{}... ({} more files, {} total)",
+                "{}... ({} more files, {})",
                 prefix,
-                hidden_count,
-                format_size(hidden_size)
+                format_count(total_hidden_count as u64),
+                format_size(total_hidden_size)
             )
             .dark_grey()
         )

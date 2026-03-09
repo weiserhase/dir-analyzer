@@ -150,11 +150,9 @@ impl App {
         let entries = node.merged_entries();
         let show_all = self.show_all_files.contains(&node.path);
 
-        // Partition: dirs always shown, files capped unless show_all
         let mut display: Vec<&TreeEntry> = Vec::new();
         let mut files_shown: usize = 0;
-        let mut hidden_count: usize = 0;
-        let mut hidden_size: u64 = 0;
+        let mut files_shown_size: u64 = 0;
 
         for entry in &entries {
             match entry {
@@ -163,16 +161,16 @@ impl App {
                     if show_all || files_shown < FILE_DISPLAY_LIMIT {
                         display.push(entry);
                         files_shown += 1;
-                    } else {
-                        hidden_count += 1;
-                        hidden_size += f.size;
+                        files_shown_size += f.size;
                     }
                 }
             }
         }
 
-        let has_cutoff = hidden_count > 0;
-        let total_display = display.len() + if has_cutoff { 1 } else { 0 };
+        let total_hidden_count = (node.own_file_count as usize).saturating_sub(files_shown);
+        let total_hidden_size = node.own_size.saturating_sub(files_shown_size);
+        let has_cutoff = total_hidden_count > 0;
+        let cutoff_expandable = !show_all && node.files.len() > files_shown;
 
         for (i, entry) in display.iter().enumerate() {
             let entry_is_last = !has_cutoff && i == display.len() - 1;
@@ -211,10 +209,23 @@ impl App {
         }
 
         if has_cutoff {
+            let label = if cutoff_expandable {
+                format!(
+                    "... ({} more files, {})",
+                    format_count(total_hidden_count as u64),
+                    format_size(total_hidden_size),
+                )
+            } else {
+                format!(
+                    "... ({} small files not tracked, {})",
+                    format_count(total_hidden_count as u64),
+                    format_size(total_hidden_size),
+                )
+            };
             rows.push(VisibleRow {
                 path: node.path.clone(),
-                name: format!("... ({} more files, {} total)", hidden_count, format_size(hidden_size)),
-                total_size: hidden_size,
+                name: label,
+                total_size: total_hidden_size,
                 own_size: 0,
                 is_file: false,
                 is_file_cutoff: true,
@@ -229,8 +240,6 @@ impl App {
                 dir_count: 0,
             });
         }
-
-        let _ = total_display;
     }
 
     // ── Key handling ────────────────────────────────────────────────────────
@@ -289,7 +298,9 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => {
                 if let Some(row) = rows.get(self.cursor) {
                     if row.is_file_cutoff {
-                        self.show_all_files.insert(row.path.clone());
+                        if !self.show_all_files.contains(&row.path) {
+                            self.show_all_files.insert(row.path.clone());
+                        }
                     } else if !row.is_file && row.has_children && !row.is_expanded {
                         self.expanded.insert(row.path.clone());
                     }
@@ -322,7 +333,9 @@ impl App {
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(row) = rows.get(self.cursor) {
                     if row.is_file_cutoff {
-                        self.show_all_files.insert(row.path.clone());
+                        if !self.show_all_files.contains(&row.path) {
+                            self.show_all_files.insert(row.path.clone());
+                        }
                     } else if !row.is_file && row.has_children {
                         if row.is_expanded {
                             self.expanded.remove(&row.path);
@@ -579,6 +592,12 @@ impl App {
     fn render_info(&self, frame: &mut Frame, area: Rect, rows: &[VisibleRow]) {
         let line = if let Some(row) = rows.get(self.cursor) {
             if row.is_file_cutoff {
+                let is_expandable = !self.show_all_files.contains(&row.path);
+                let hint = if is_expandable {
+                    "Press Enter or → to show more"
+                } else {
+                    "These files were too small to track individually"
+                };
                 Line::from(vec![
                     Span::styled(
                         format!(" L{} ", row.depth),
@@ -592,8 +611,8 @@ impl App {
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::styled(
-                        "Press Enter or → to show all files",
-                        Style::default().fg(Color::Cyan),
+                        hint,
+                        Style::default().fg(if is_expandable { Color::Cyan } else { Color::DarkGray }),
                     ),
                 ])
             } else {
