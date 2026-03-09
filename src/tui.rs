@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -77,6 +78,13 @@ struct StatusMessage {
     created: Instant,
 }
 
+struct PendingDelete {
+    path: PathBuf,
+    name: String,
+    is_file: bool,
+    receiver: mpsc::Receiver<Result<(), String>>,
+}
+
 struct App {
     root: DirNode,
     expanded: HashSet<PathBuf>,
@@ -85,6 +93,7 @@ struct App {
     should_quit: bool,
     delete_state: DeleteState,
     status: Option<StatusMessage>,
+    pending_delete: Option<PendingDelete>,
 }
 
 impl App {
@@ -99,6 +108,7 @@ impl App {
             should_quit: false,
             delete_state: DeleteState::Normal,
             status: None,
+            pending_delete: None,
         }
     }
 
@@ -375,9 +385,11 @@ impl App {
             }
 
             KeyCode::Char('d') => {
-                if let Some(row) = rows.get(self.cursor) {
-                    if !row.is_file_cutoff {
-                        self.delete_state = DeleteState::PendingD;
+                if self.pending_delete.is_none() {
+                    if let Some(row) = rows.get(self.cursor) {
+                        if !row.is_file_cutoff {
+                            self.delete_state = DeleteState::PendingD;
+                        }
                     }
                 }
             }
@@ -423,52 +435,39 @@ impl App {
                     }
                 };
 
+                self.delete_state = DeleteState::Normal;
+
                 if is_root {
                     self.status = Some(StatusMessage {
                         text: "Cannot delete the root scan directory".into(),
                         style: Style::default().fg(Color::Red).bold(),
                         created: Instant::now(),
                     });
-                    self.delete_state = DeleteState::Normal;
                     return;
                 }
 
-                let fs_result = if is_file {
-                    std::fs::remove_file(&path)
-                } else {
-                    std::fs::remove_dir_all(&path)
-                };
+                let (tx, rx) = mpsc::channel();
+                let delete_path = path.clone();
+                std::thread::spawn(move || {
+                    let result = if is_file {
+                        std::fs::remove_file(&delete_path)
+                    } else {
+                        std::fs::remove_dir_all(&delete_path)
+                    };
+                    let _ = tx.send(result.map_err(|e| e.to_string()));
+                });
 
-                match fs_result {
-                    Ok(()) => {
-                        if is_file {
-                            self.root.remove_file_at(&path);
-                        } else {
-                            self.expanded.remove(&path);
-                            self.show_all_files.remove(&path);
-                            self.root.remove_dir_at(&path);
-                        }
-                        self.clamp_cursor();
-                        let label = if is_file {
-                            name.clone()
-                        } else {
-                            format!("{}/", name)
-                        };
-                        self.status = Some(StatusMessage {
-                            text: format!("Deleted {}", label),
-                            style: Style::default().fg(Color::Green).bold(),
-                            created: Instant::now(),
-                        });
-                    }
-                    Err(e) => {
-                        self.status = Some(StatusMessage {
-                            text: format!("Delete failed: {}", e),
-                            style: Style::default().fg(Color::Red).bold(),
-                            created: Instant::now(),
-                        });
-                    }
-                }
-                self.delete_state = DeleteState::Normal;
+                self.pending_delete = Some(PendingDelete {
+                    path,
+                    name,
+                    is_file,
+                    receiver: rx,
+                });
+                self.status = Some(StatusMessage {
+                    text: "Deleting...".into(),
+                    style: Style::default().fg(Color::Yellow).bold(),
+                    created: Instant::now(),
+                });
             }
             _ => {
                 self.delete_state = DeleteState::Normal;
@@ -477,6 +476,60 @@ impl App {
                     style: Style::default().fg(Color::DarkGray),
                     created: Instant::now(),
                 });
+            }
+        }
+    }
+
+    fn check_pending_delete(&mut self) {
+        let result = if let Some(ref pending) = self.pending_delete {
+            match pending.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.status = Some(StatusMessage {
+                        text: "Deleting...".into(),
+                        style: Style::default().fg(Color::Yellow).bold(),
+                        created: Instant::now(),
+                    });
+                    None
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Delete thread crashed".to_string()))
+                }
+            }
+        } else {
+            return;
+        };
+
+        if let Some(result) = result {
+            let pending = self.pending_delete.take().unwrap();
+            match result {
+                Ok(()) => {
+                    if pending.is_file {
+                        self.root.remove_file_at(&pending.path);
+                    } else {
+                        self.expanded.remove(&pending.path);
+                        self.show_all_files.remove(&pending.path);
+                        self.root.remove_dir_at(&pending.path);
+                    }
+                    self.clamp_cursor();
+                    let label = if pending.is_file {
+                        pending.name
+                    } else {
+                        format!("{}/", pending.name)
+                    };
+                    self.status = Some(StatusMessage {
+                        text: format!("Deleted {}", label),
+                        style: Style::default().fg(Color::Green).bold(),
+                        created: Instant::now(),
+                    });
+                }
+                Err(e) => {
+                    self.status = Some(StatusMessage {
+                        text: format!("Delete failed: {}", e),
+                        style: Style::default().fg(Color::Red).bold(),
+                        created: Instant::now(),
+                    });
+                }
             }
         }
     }
@@ -1075,11 +1128,21 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, root: DirNode)
     loop {
         terminal.draw(|frame| app.render(frame))?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                app.handle_key(key.code, key.modifiers);
-                if app.should_quit {
-                    break;
+        app.check_pending_delete();
+
+        let poll_timeout = if app.pending_delete.is_some() {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_secs(60)
+        };
+
+        if event::poll(poll_timeout)? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    app.handle_key(key.code, key.modifiers);
+                    if app.should_quit {
+                        break;
+                    }
                 }
             }
         }
