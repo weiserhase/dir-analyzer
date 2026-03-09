@@ -14,6 +14,8 @@ use ratatui::widgets::*;
 
 use crate::model::{format_count, format_size, DirNode, TreeEntry};
 
+const FILE_DISPLAY_LIMIT: usize = 10;
+
 // ── Depth palette: distinct hue per nesting level ───────────────────────────
 
 const DEPTH_COLORS: [Color; 8] = [
@@ -45,6 +47,7 @@ struct VisibleRow {
     total_size: u64,
     own_size: u64,
     is_file: bool,
+    is_file_cutoff: bool,
     has_children: bool,
     is_expanded: bool,
     depth: usize,
@@ -77,6 +80,7 @@ struct StatusMessage {
 struct App {
     root: DirNode,
     expanded: HashSet<PathBuf>,
+    show_all_files: HashSet<PathBuf>,
     cursor: usize,
     should_quit: bool,
     delete_state: DeleteState,
@@ -90,6 +94,7 @@ impl App {
         Self {
             root,
             expanded,
+            show_all_files: HashSet::new(),
             cursor: 0,
             should_quit: false,
             delete_state: DeleteState::Normal,
@@ -123,6 +128,7 @@ impl App {
             total_size: node.total_size,
             own_size: node.own_size,
             is_file: false,
+            is_file_cutoff: false,
             has_children,
             is_expanded,
             depth,
@@ -134,48 +140,97 @@ impl App {
             dir_count: node.dir_count,
         });
 
-        if is_expanded && has_children {
-            let mut child_ancestors = ancestor_is_last.to_vec();
-            child_ancestors.push(is_last);
+        if !(is_expanded && has_children) {
+            return;
+        }
 
-            let entries = node.merged_entries();
-            let len = entries.len();
+        let mut child_ancestors = ancestor_is_last.to_vec();
+        child_ancestors.push(is_last);
 
-            for (i, entry) in entries.iter().enumerate() {
-                let entry_is_last = i == len - 1;
-                match entry {
-                    TreeEntry::Dir(child) => {
-                        self.collect_visible(
-                            child,
-                            depth + 1,
-                            &child_ancestors,
-                            entry_is_last,
-                            node.total_size,
-                            root_size,
-                            rows,
-                        );
-                    }
-                    TreeEntry::File(file, file_path) => {
-                        rows.push(VisibleRow {
-                            path: file_path.clone(),
-                            name: file.name.clone(),
-                            total_size: file.size,
-                            own_size: file.size,
-                            is_file: true,
-                            has_children: false,
-                            is_expanded: false,
-                            depth: depth + 1,
-                            ancestor_is_last: child_ancestors.clone(),
-                            is_last: entry_is_last,
-                            parent_size: node.total_size,
-                            root_size,
-                            file_count: 0,
-                            dir_count: 0,
-                        });
+        let entries = node.merged_entries();
+        let show_all = self.show_all_files.contains(&node.path);
+
+        // Partition: dirs always shown, files capped unless show_all
+        let mut display: Vec<&TreeEntry> = Vec::new();
+        let mut files_shown: usize = 0;
+        let mut hidden_count: usize = 0;
+        let mut hidden_size: u64 = 0;
+
+        for entry in &entries {
+            match entry {
+                TreeEntry::Dir(_) => display.push(entry),
+                TreeEntry::File(f, _) => {
+                    if show_all || files_shown < FILE_DISPLAY_LIMIT {
+                        display.push(entry);
+                        files_shown += 1;
+                    } else {
+                        hidden_count += 1;
+                        hidden_size += f.size;
                     }
                 }
             }
         }
+
+        let has_cutoff = hidden_count > 0;
+        let total_display = display.len() + if has_cutoff { 1 } else { 0 };
+
+        for (i, entry) in display.iter().enumerate() {
+            let entry_is_last = !has_cutoff && i == display.len() - 1;
+            match entry {
+                TreeEntry::Dir(child) => {
+                    self.collect_visible(
+                        child,
+                        depth + 1,
+                        &child_ancestors,
+                        entry_is_last,
+                        node.total_size,
+                        root_size,
+                        rows,
+                    );
+                }
+                TreeEntry::File(file, file_path) => {
+                    rows.push(VisibleRow {
+                        path: file_path.clone(),
+                        name: file.name.clone(),
+                        total_size: file.size,
+                        own_size: file.size,
+                        is_file: true,
+                        is_file_cutoff: false,
+                        has_children: false,
+                        is_expanded: false,
+                        depth: depth + 1,
+                        ancestor_is_last: child_ancestors.clone(),
+                        is_last: entry_is_last,
+                        parent_size: node.total_size,
+                        root_size,
+                        file_count: 0,
+                        dir_count: 0,
+                    });
+                }
+            }
+        }
+
+        if has_cutoff {
+            rows.push(VisibleRow {
+                path: node.path.clone(),
+                name: format!("... ({} more files, {} total)", hidden_count, format_size(hidden_size)),
+                total_size: hidden_size,
+                own_size: 0,
+                is_file: false,
+                is_file_cutoff: true,
+                has_children: false,
+                is_expanded: false,
+                depth: depth + 1,
+                ancestor_is_last: child_ancestors,
+                is_last: true,
+                parent_size: node.total_size,
+                root_size,
+                file_count: 0,
+                dir_count: 0,
+            });
+        }
+
+        let _ = total_display;
     }
 
     // ── Key handling ────────────────────────────────────────────────────────
@@ -233,7 +288,9 @@ impl App {
 
             KeyCode::Right | KeyCode::Char('l') => {
                 if let Some(row) = rows.get(self.cursor) {
-                    if !row.is_file && row.has_children && !row.is_expanded {
+                    if row.is_file_cutoff {
+                        self.show_all_files.insert(row.path.clone());
+                    } else if !row.is_file && row.has_children && !row.is_expanded {
                         self.expanded.insert(row.path.clone());
                     }
                 }
@@ -241,8 +298,7 @@ impl App {
 
             KeyCode::Left | KeyCode::Char('h') => {
                 if let Some(row) = rows.get(self.cursor) {
-                    if row.is_file {
-                        // go to parent dir
+                    if row.is_file || row.is_file_cutoff {
                         for i in (0..self.cursor).rev() {
                             if rows[i].depth < row.depth {
                                 self.cursor = i;
@@ -265,9 +321,12 @@ impl App {
 
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(row) = rows.get(self.cursor) {
-                    if !row.is_file && row.has_children {
+                    if row.is_file_cutoff {
+                        self.show_all_files.insert(row.path.clone());
+                    } else if !row.is_file && row.has_children {
                         if row.is_expanded {
                             self.expanded.remove(&row.path);
+                            self.show_all_files.remove(&row.path);
                             self.clamp_cursor();
                         } else {
                             self.expanded.insert(row.path.clone());
@@ -278,7 +337,7 @@ impl App {
 
             KeyCode::Char('e') => {
                 if let Some(row) = rows.get(self.cursor) {
-                    if !row.is_file {
+                    if !row.is_file && !row.is_file_cutoff {
                         let path = row.path.clone();
                         let paths = collect_descendant_paths(&self.root, &path);
                         for p in paths {
@@ -290,11 +349,12 @@ impl App {
 
             KeyCode::Char('c') => {
                 if let Some(row) = rows.get(self.cursor) {
-                    if !row.is_file {
+                    if !row.is_file && !row.is_file_cutoff {
                         let path = row.path.clone();
                         let paths = collect_descendant_paths(&self.root, &path);
-                        for p in paths {
-                            self.expanded.remove(&p);
+                        for p in &paths {
+                            self.expanded.remove(p);
+                            self.show_all_files.remove(p);
                         }
                         self.clamp_cursor();
                     }
@@ -302,7 +362,11 @@ impl App {
             }
 
             KeyCode::Char('d') => {
-                self.delete_state = DeleteState::PendingD;
+                if let Some(row) = rows.get(self.cursor) {
+                    if !row.is_file_cutoff {
+                        self.delete_state = DeleteState::PendingD;
+                    }
+                }
             }
 
             _ => {}
@@ -312,6 +376,10 @@ impl App {
     fn initiate_delete(&mut self) {
         let rows = self.visible_rows();
         if let Some(row) = rows.get(self.cursor) {
+            if row.is_file_cutoff {
+                self.delete_state = DeleteState::Normal;
+                return;
+            }
             let is_root = row.depth == 0 && !row.is_file;
             self.delete_state = DeleteState::Confirm {
                 path: row.path.clone(),
@@ -364,10 +432,15 @@ impl App {
                             self.root.remove_file_at(&path);
                         } else {
                             self.expanded.remove(&path);
+                            self.show_all_files.remove(&path);
                             self.root.remove_dir_at(&path);
                         }
                         self.clamp_cursor();
-                        let label = if is_file { &name } else { &format!("{}/", name) };
+                        let label = if is_file {
+                            name.clone()
+                        } else {
+                            format!("{}/", name)
+                        };
                         self.status = Some(StatusMessage {
                             text: format!("Deleted {}", label),
                             style: Style::default().fg(Color::Green).bold(),
@@ -505,69 +578,96 @@ impl App {
 
     fn render_info(&self, frame: &mut Frame, area: Rect, rows: &[VisibleRow]) {
         let line = if let Some(row) = rows.get(self.cursor) {
-            let pct_parent = if row.parent_size > 0 {
-                row.total_size as f64 / row.parent_size as f64 * 100.0
+            if row.is_file_cutoff {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" L{} ", row.depth),
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(depth_fg(row.depth))
+                            .bold(),
+                    ),
+                    Span::styled(
+                        format!("  {}  │  ", row.name),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        "Press Enter or → to show all files",
+                        Style::default().fg(Color::Cyan),
+                    ),
+                ])
             } else {
-                100.0
-            };
-            let pct_root = if row.root_size > 0 {
-                row.total_size as f64 / row.root_size as f64 * 100.0
-            } else {
-                100.0
-            };
+                let pct_parent = if row.parent_size > 0 {
+                    row.total_size as f64 / row.parent_size as f64 * 100.0
+                } else {
+                    100.0
+                };
+                let pct_root = if row.root_size > 0 {
+                    row.total_size as f64 / row.root_size as f64 * 100.0
+                } else {
+                    100.0
+                };
 
-            let kind_label = if row.is_file { "file" } else { "dir" };
+                let kind_label = if row.is_file { "file" } else { "dir" };
 
-            let mut spans = vec![
-                Span::styled(
-                    format!(" L{} ", row.depth),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(depth_fg(row.depth))
-                        .bold(),
-                ),
-                Span::styled(
-                    format!(" {} ", kind_label),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(" → ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    row.path.display().to_string(),
-                    Style::default().fg(Color::White).bold(),
-                ),
-                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format_size(row.total_size),
-                    Style::default().fg(size_color(row.total_size)),
-                ),
-            ];
+                let mut spans = vec![
+                    Span::styled(
+                        format!(" L{} ", row.depth),
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(depth_fg(row.depth))
+                            .bold(),
+                    ),
+                    Span::styled(
+                        format!(" {} ", kind_label),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(" → ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        row.path.display().to_string(),
+                        Style::default().fg(Color::White).bold(),
+                    ),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format_size(row.total_size),
+                        Style::default().fg(size_color(row.total_size)),
+                    ),
+                ];
 
-            if !row.is_file {
-                spans.push(Span::styled(
-                    format!(" (own: {})", format_size(row.own_size)),
-                    Style::default().fg(Color::DarkGray),
-                ));
-                spans.push(Span::styled("  │  ", Style::default().fg(Color::DarkGray)));
-                spans.push(Span::styled(
-                    format!("{} files, {} dirs", format_count(row.file_count), format_count(row.dir_count)),
-                    Style::default().fg(Color::White),
-                ));
+                if !row.is_file {
+                    spans.push(Span::styled(
+                        format!(" (own: {})", format_size(row.own_size)),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    spans.push(Span::styled(
+                        "  │  ",
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    spans.push(Span::styled(
+                        format!(
+                            "{} files, {} dirs",
+                            format_count(row.file_count),
+                            format_count(row.dir_count)
+                        ),
+                        Style::default().fg(Color::White),
+                    ));
+                }
+
+                spans.extend([
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{:.1}% parent", pct_parent),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{:.1}% root", pct_root),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                ]);
+
+                Line::from(spans)
             }
-
-            spans.extend([
-                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("{:.1}% parent", pct_parent),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled("  │  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("{:.1}% root", pct_root),
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]);
-
-            Line::from(spans)
         } else {
             Line::raw("")
         };
@@ -725,27 +825,37 @@ fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut prefix_len: usize = 0;
 
+    let dim = Style::default().fg(Color::DarkGray);
+
     // Depth level tag
     let depth_tag = format!(" L{} ", row.depth);
-    spans.push(Span::styled(
-        depth_tag.clone(),
-        Style::default()
-            .fg(Color::Black)
-            .bg(depth_fg(row.depth))
-            .bold(),
-    ));
+    if row.is_file_cutoff {
+        spans.push(Span::styled(depth_tag.clone(), dim));
+    } else {
+        spans.push(Span::styled(
+            depth_tag.clone(),
+            Style::default()
+                .fg(Color::Black)
+                .bg(depth_fg(row.depth))
+                .bold(),
+        ));
+    }
     prefix_len += depth_tag.len();
 
     spans.push(Span::raw(" "));
     prefix_len += 1;
 
-    // Tree connector lines coloured by their respective depth
+    // Tree connector lines
     if row.depth > 0 {
         for i in 0..row.ancestor_is_last.len() {
             if i == 0 {
                 continue;
             }
-            let seg_color = Style::default().fg(depth_fg(i));
+            let seg_color = if row.is_file_cutoff {
+                dim
+            } else {
+                Style::default().fg(depth_fg(i))
+            };
             if row.ancestor_is_last[i] {
                 spans.push(Span::styled("    ", seg_color));
             } else {
@@ -753,7 +863,11 @@ fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
             }
             prefix_len += 4;
         }
-        let conn_color = Style::default().fg(depth_fg(row.depth));
+        let conn_color = if row.is_file_cutoff {
+            dim
+        } else {
+            Style::default().fg(depth_fg(row.depth))
+        };
         if row.is_last {
             spans.push(Span::styled(" └─ ", conn_color));
         } else {
@@ -762,9 +876,25 @@ fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
         prefix_len += 4;
     }
 
+    // Cutoff rows get a fully dim line
+    if row.is_file_cutoff {
+        spans.push(Span::styled("  ", dim));
+        prefix_len += 2;
+
+        let remaining = width.saturating_sub(prefix_len);
+        let label = &row.name;
+        let truncated = if label.len() > remaining {
+            format!("{}…", &label[..remaining.saturating_sub(1)])
+        } else {
+            format!("{:<width$}", label, width = remaining)
+        };
+        spans.push(Span::styled(truncated, Style::default().fg(Color::Rgb(100, 100, 130))));
+        return Line::from(spans);
+    }
+
     // Icon column (2 chars)
     if row.is_file {
-        spans.push(Span::styled("· ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("· ", dim));
     } else if row.has_children {
         if row.is_expanded {
             spans.push(Span::styled("▼ ", Style::default().fg(Color::Yellow)));
@@ -797,7 +927,7 @@ fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
     let pct_parent_str = format!("{:>5.1}%", pct_parent);
     let pct_root_str = format!("{:>5.1}%", pct_root);
 
-    // suffix length: " {:>9}  {bar:16}  {:>6}  {:>6}" = 1+9+2+16+2+6+2+6 = 44
+    // suffix: " {:>9}  {bar:16}  {:>6}  {:>6}" = 1+9+2+16+2+6+2+6 = 44
     let suffix_len = 44;
 
     let name_width = width.saturating_sub(prefix_len + suffix_len + 1);
@@ -833,10 +963,7 @@ fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
         "█".repeat(filled),
         Style::default().fg(bar_color(pct_parent)),
     ));
-    spans.push(Span::styled(
-        "░".repeat(empty),
-        Style::default().fg(Color::DarkGray),
-    ));
+    spans.push(Span::styled("░".repeat(empty), dim));
 
     spans.push(Span::styled(
         format!(" {}", pct_parent_str),

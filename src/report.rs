@@ -4,6 +4,8 @@ use crossterm::style::Stylize;
 
 use crate::model::{format_count, format_size, DirNode, TreeEntry};
 
+const FILE_DISPLAY_LIMIT: usize = 10;
+
 pub fn print_tree(root: &DirNode, max_depth: usize) {
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
@@ -44,10 +46,31 @@ fn print_children<W: Write>(
     ancestor_is_last: &[bool],
 ) {
     let entries = node.merged_entries();
-    let len = entries.len();
 
-    for (i, entry) in entries.iter().enumerate() {
-        let is_last = i == len - 1;
+    let mut display: Vec<&TreeEntry> = Vec::new();
+    let mut files_shown: usize = 0;
+    let mut hidden_count: usize = 0;
+    let mut hidden_size: u64 = 0;
+
+    for entry in &entries {
+        match entry {
+            TreeEntry::Dir(_) => display.push(entry),
+            TreeEntry::File(f, _) => {
+                if files_shown < FILE_DISPLAY_LIMIT {
+                    display.push(entry);
+                    files_shown += 1;
+                } else {
+                    hidden_count += 1;
+                    hidden_size += f.size;
+                }
+            }
+        }
+    }
+
+    let has_cutoff = hidden_count > 0;
+
+    for (i, entry) in display.iter().enumerate() {
+        let is_last = !has_cutoff && i == display.len() - 1;
         match entry {
             TreeEntry::Dir(child) => {
                 print_dir_node(
@@ -71,6 +94,22 @@ fn print_children<W: Write>(
                 );
             }
         }
+    }
+
+    if has_cutoff {
+        let prefix = build_prefix(ancestor_is_last, true);
+        writeln!(
+            out,
+            "{}",
+            format!(
+                "{}... ({} more files, {} total)",
+                prefix,
+                hidden_count,
+                format_size(hidden_size)
+            )
+            .dark_grey()
+        )
+        .ok();
     }
 }
 
