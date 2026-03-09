@@ -1,0 +1,26 @@
+[package]
+name = "dir-analyzer"
+version = "0.1.0"
+edition = "2021"
+description = "Fast parallel directory size analyzer with interactive tree explorer"
+license = "MIT"
+repository = "https://github.com/jkeller/dir-analyzer"
+keywords = ["disk", "directory", "analyzer", "tui", "treesize"]
+categories = ["command-line-utilities", "filesystem"]
+readme = "README.md"
+authors = ["jkeller"]
+
+[[bin]]
+name = "dir-analyzer"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
