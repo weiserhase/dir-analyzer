@@ -40,11 +40,14 @@ Prebuilt binaries for Linux, macOS, and Windows are attached to each [GitHub rel
 ## Usage
 
 ```bash
-dir-analyzer [PATH]        # static report (default depth 3)
-dir-analyzer [PATH] -i     # interactive TUI explorer
+dir-analyzer [PATH]                      # static report (default depth 3)
+dir-analyzer [PATH] -i                   # interactive TUI explorer
+dir-analyzer [PATH] -e '^target$' -e '\.log$'   # skip matching entries
 ```
 
-Options: `-i` interactive, `-d <N>` max depth, `-t <N>` threads. Inside the TUI, `dd` then `y` deletes the selected file/directory (permanent, no undo).
+Options: `-i` interactive, `-d <N>` max depth, `-t <N>` threads, `-e <REGEX>` exclude. Inside the TUI, `dd` then `y` deletes the selected file/directory (permanent, no undo).
+
+`-e/--exclude` takes a regex matched against each file/directory **name** (basename, not the full path) and can be repeated. Excluded directories are pruned entirely — they and their contents don't count toward any totals. For example, `-e '^(target|node_modules)$' -e '^\.git$'`.
 
 ## License
 

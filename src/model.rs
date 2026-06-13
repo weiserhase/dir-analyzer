@@ -23,7 +23,6 @@ pub enum TreeEntry<'a> {
     File(&'a FileEntry, PathBuf),
 }
 
-
 impl DirNode {
     /// Merge children (dirs) and files into a single size-descending list.
     /// Both `children` and `files` are already sorted desc by the scanner.
@@ -105,12 +104,11 @@ impl DirNode {
     }
 
     fn recalculate(&mut self) {
-        self.total_size =
-            self.own_size + self.children.iter().map(|c| c.total_size).sum::<u64>();
+        self.total_size = self.own_size + self.children.iter().map(|c| c.total_size).sum::<u64>();
         self.file_count =
             self.own_file_count + self.children.iter().map(|c| c.file_count).sum::<u64>();
-        self.dir_count = self.children.len() as u64
-            + self.children.iter().map(|c| c.dir_count).sum::<u64>();
+        self.dir_count =
+            self.children.len() as u64 + self.children.iter().map(|c| c.dir_count).sum::<u64>();
     }
 }
 

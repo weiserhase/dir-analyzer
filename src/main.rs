@@ -31,6 +31,10 @@ struct Cli {
     /// Number of threads (defaults to all available cores)
     #[arg(short = 't', long)]
     threads: Option<usize>,
+
+    /// Exclude files/directories whose name matches this regex (repeatable)
+    #[arg(short = 'e', long)]
+    exclude: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -48,6 +52,9 @@ fn main() -> Result<()> {
             .ok();
     }
 
+    let exclude = regex::RegexSet::new(&cli.exclude)
+        .map_err(|e| anyhow::anyhow!("invalid --exclude regex: {e}"))?;
+
     let start = Instant::now();
 
     let progress = scanner::ScanProgress::new();
@@ -64,7 +71,7 @@ fn main() -> Result<()> {
         }
     });
 
-    let root = scanner::scan(&path, &progress);
+    let root = scanner::scan(&path, &exclude, &progress);
     progress.mark_done();
     progress_thread.join().ok();
 

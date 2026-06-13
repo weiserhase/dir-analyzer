@@ -130,7 +130,11 @@ impl App {
                     ),
                     Span::styled(
                         hint,
-                        Style::default().fg(if is_expandable { Color::Cyan } else { Color::DarkGray }),
+                        Style::default().fg(if is_expandable {
+                            Color::Cyan
+                        } else {
+                            Color::DarkGray
+                        }),
                     ),
                 ])
             } else {
@@ -176,10 +180,7 @@ impl App {
                         format!(" (own: {})", format_size(row.own_size)),
                         Style::default().fg(Color::DarkGray),
                     ));
-                    spans.push(Span::styled(
-                        "  │  ",
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    spans.push(Span::styled("  │  ", Style::default().fg(Color::DarkGray)));
                     spans.push(Span::styled(
                         format!(
                             "{} files, {} dirs",
@@ -216,10 +217,8 @@ impl App {
     fn render_help(&self, frame: &mut Frame, area: Rect) {
         if let Some(ref msg) = self.status {
             if msg.created.elapsed().as_secs() < 3 {
-                let line =
-                    Line::from(vec![Span::styled(format!("  {}", msg.text), msg.style)]);
-                let bar =
-                    Paragraph::new(line).style(Style::default().bg(Color::Rgb(25, 25, 35)));
+                let line = Line::from(vec![Span::styled(format!("  {}", msg.text), msg.style)]);
+                let bar = Paragraph::new(line).style(Style::default().bg(Color::Rgb(25, 25, 35)));
                 frame.render_widget(bar, area);
                 return;
             }
@@ -425,7 +424,10 @@ fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
         } else {
             format!("{:<width$}", label, width = remaining)
         };
-        spans.push(Span::styled(truncated, Style::default().fg(Color::Rgb(100, 100, 130))));
+        spans.push(Span::styled(
+            truncated,
+            Style::default().fg(Color::Rgb(100, 100, 130)),
+        ));
         return Line::from(spans);
     }
 

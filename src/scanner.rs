@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use rayon::prelude::*;
+use regex::RegexSet;
 
 use crate::model::{DirNode, FileEntry};
 
@@ -42,11 +43,11 @@ impl ScanProgress {
     }
 }
 
-pub fn scan(path: &Path, progress: &ScanProgress) -> DirNode {
-    scan_recursive(path, progress)
+pub fn scan(path: &Path, exclude: &RegexSet, progress: &ScanProgress) -> DirNode {
+    scan_recursive(path, exclude, progress)
 }
 
-fn scan_recursive(path: &Path, progress: &ScanProgress) -> DirNode {
+fn scan_recursive(path: &Path, exclude: &RegexSet, progress: &ScanProgress) -> DirNode {
     progress.dirs.fetch_add(1, Ordering::Relaxed);
 
     let entries = match fs::read_dir(path) {
@@ -76,33 +77,38 @@ fn scan_recursive(path: &Path, progress: &ScanProgress) -> DirNode {
 
     for entry in entries {
         match entry {
-            Ok(entry) => match entry.metadata() {
-                Ok(meta) => {
-                    if meta.is_dir() {
-                        subdirs.push(entry.path());
-                    } else if meta.is_file() {
-                        let size = meta.len();
-                        own_size += size;
-                        file_count += 1;
-                        progress.files.fetch_add(1, Ordering::Relaxed);
+            Ok(entry) => {
+                if !exclude.is_empty() && exclude.is_match(&entry.file_name().to_string_lossy()) {
+                    continue;
+                }
+                match entry.metadata() {
+                    Ok(meta) => {
+                        if meta.is_dir() {
+                            subdirs.push(entry.path());
+                        } else if meta.is_file() {
+                            let size = meta.len();
+                            own_size += size;
+                            file_count += 1;
+                            progress.files.fetch_add(1, Ordering::Relaxed);
 
-                        if files.len() < FILE_STORE_LIMIT || size > min_kept {
-                            files.push(FileEntry {
-                                name: entry.file_name().to_string_lossy().into_owned(),
-                                size,
-                            });
-                            if files.len() >= FILE_STORE_LIMIT * 2 {
-                                files.sort_unstable_by(|a, b| b.size.cmp(&a.size));
-                                files.truncate(FILE_STORE_LIMIT);
-                                min_kept = files.last().map(|f| f.size).unwrap_or(0);
+                            if files.len() < FILE_STORE_LIMIT || size > min_kept {
+                                files.push(FileEntry {
+                                    name: entry.file_name().to_string_lossy().into_owned(),
+                                    size,
+                                });
+                                if files.len() >= FILE_STORE_LIMIT * 2 {
+                                    files.sort_unstable_by(|a, b| b.size.cmp(&a.size));
+                                    files.truncate(FILE_STORE_LIMIT);
+                                    min_kept = files.last().map(|f| f.size).unwrap_or(0);
+                                }
                             }
                         }
                     }
+                    Err(e) => {
+                        errors.push(format!("{}: {}", entry.path().display(), e));
+                    }
                 }
-                Err(e) => {
-                    errors.push(format!("{}: {}", entry.path().display(), e));
-                }
-            },
+            }
             Err(e) => errors.push(e.to_string()),
         }
     }
@@ -112,17 +118,15 @@ fn scan_recursive(path: &Path, progress: &ScanProgress) -> DirNode {
 
     let mut children: Vec<DirNode> = subdirs
         .par_iter()
-        .map(|p| scan_recursive(p, progress))
+        .map(|p| scan_recursive(p, exclude, progress))
         .collect();
 
     children.sort_unstable_by(|a, b| b.total_size.cmp(&a.total_size));
 
     let children_size: u64 = children.iter().map(|c| c.total_size).sum();
     let total_size = own_size + children_size;
-    let dir_count =
-        children.len() as u64 + children.iter().map(|c| c.dir_count).sum::<u64>();
-    let total_file_count =
-        file_count + children.iter().map(|c| c.file_count).sum::<u64>();
+    let dir_count = children.len() as u64 + children.iter().map(|c| c.dir_count).sum::<u64>();
+    let total_file_count = file_count + children.iter().map(|c| c.file_count).sum::<u64>();
 
     DirNode {
         name: dir_name(path),

@@ -131,7 +131,9 @@ fn print_dir_node<W: Write>(
     };
 
     let bar_width = 20;
-    let filled = ((pct / 100.0) * bar_width as f64).round().min(bar_width as f64) as usize;
+    let filled = ((pct / 100.0) * bar_width as f64)
+        .round()
+        .min(bar_width as f64) as usize;
     let empty = bar_width - filled;
 
     let name_display = format!("{}/", node.name);
@@ -183,7 +185,9 @@ fn print_file_node<W: Write>(
     };
 
     let bar_width = 20;
-    let filled = ((pct / 100.0) * bar_width as f64).round().min(bar_width as f64) as usize;
+    let filled = ((pct / 100.0) * bar_width as f64)
+        .round()
+        .min(bar_width as f64) as usize;
     let empty = bar_width - filled;
 
     let line = format!(
