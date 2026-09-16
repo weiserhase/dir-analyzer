@@ -8,8 +8,7 @@ use super::row::VisibleRow;
 use super::state::{App, DeleteState};
 
 impl App {
-    pub(super) fn render(&self, frame: &mut Frame) {
-        let rows = self.visible_rows();
+    pub(super) fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
         let layout = Layout::vertical([
@@ -21,8 +20,8 @@ impl App {
         .split(area);
 
         self.render_header(frame, layout[0]);
-        self.render_tree(frame, layout[1], &rows);
-        self.render_info(frame, layout[2], &rows);
+        self.render_tree(frame, layout[1]);
+        self.render_info(frame, layout[2]);
         self.render_help(frame, layout[3]);
 
         if let DeleteState::Confirm {
@@ -83,10 +82,23 @@ impl App {
         frame.render_widget(header, area);
     }
 
-    fn render_tree(&self, frame: &mut Frame, area: Rect, rows: &[VisibleRow]) {
+    fn render_tree(&mut self, frame: &mut Frame, area: Rect) {
         let width = area.width as usize;
+        let height = (area.height as usize).max(1);
 
-        let items: Vec<ListItem> = rows
+        // Scroll just enough to keep the cursor visible, then build widgets
+        // only for the rows on screen; the tree may have millions of rows.
+        if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        } else if self.cursor >= self.scroll_offset + height {
+            self.scroll_offset = self.cursor + 1 - height;
+        }
+        self.scroll_offset = self
+            .scroll_offset
+            .min(self.rows.len().saturating_sub(height));
+        let end = (self.scroll_offset + height).min(self.rows.len());
+
+        let items: Vec<ListItem> = self.rows[self.scroll_offset..end]
             .iter()
             .map(|row| {
                 let line = build_tree_line(row, width);
@@ -103,12 +115,14 @@ impl App {
             .highlight_symbol(" ");
 
         let mut state = ListState::default();
-        state.select(Some(self.cursor));
+        if !self.rows.is_empty() {
+            state.select(Some(self.cursor - self.scroll_offset));
+        }
         frame.render_stateful_widget(list, area, &mut state);
     }
 
-    fn render_info(&self, frame: &mut Frame, area: Rect, rows: &[VisibleRow]) {
-        let line = if let Some(row) = rows.get(self.cursor) {
+    fn render_info(&self, frame: &mut Frame, area: Rect) {
+        let line = if let Some(row) = self.rows.get(self.cursor) {
             if row.is_file_cutoff {
                 let is_expandable = !self.show_all_files.contains(&row.path);
                 let hint = if is_expandable {
@@ -303,8 +317,10 @@ impl App {
         } else {
             let path_str = path.display().to_string();
             let max_path = (popup_w as usize).saturating_sub(6);
-            let display_path = if path_str.len() > max_path {
-                format!("…{}", &path_str[path_str.len() - max_path + 1..])
+            let path_chars = path_str.chars().count();
+            let display_path = if path_chars > max_path {
+                let skip = path_chars - max_path.saturating_sub(1);
+                format!("…{}", path_str.chars().skip(skip).collect::<String>())
             } else {
                 path_str
             };
@@ -356,6 +372,14 @@ impl App {
 }
 
 // ── Tree line builder ───────────────────────────────────────────────────────
+
+/// First `max` chars of `s`; slicing by bytes would panic on multi-byte names.
+fn truncate_chars(s: &str, max: usize) -> &str {
+    match s.char_indices().nth(max) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
 
 fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -419,8 +443,8 @@ fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
 
         let remaining = width.saturating_sub(prefix_len);
         let label = &row.name;
-        let truncated = if label.len() > remaining {
-            format!("{}…", &label[..remaining.saturating_sub(1)])
+        let truncated = if label.chars().count() > remaining {
+            format!("{}…", truncate_chars(label, remaining.saturating_sub(1)))
         } else {
             format!("{:<width$}", label, width = remaining)
         };
@@ -475,9 +499,8 @@ fn build_tree_line(row: &VisibleRow, width: usize) -> Line<'static> {
     } else {
         format!("{}/", row.name)
     };
-    if name.len() > name_width {
-        name.truncate(name_width.saturating_sub(1));
-        name.push('…');
+    if name.chars().count() > name_width {
+        name = format!("{}…", truncate_chars(&name, name_width.saturating_sub(1)));
     }
 
     let color = size_color(row.total_size);

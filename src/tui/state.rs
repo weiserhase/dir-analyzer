@@ -39,6 +39,11 @@ pub(super) struct PendingDelete {
 
 pub(super) struct App {
     pub root: DirNode,
+    /// Flattened tree, rebuilt by `refresh_rows` only when the tree or
+    /// expansion state changes — not on every keypress or frame.
+    pub rows: Vec<VisibleRow>,
+    /// Index of the first row drawn in the tree viewport.
+    pub scroll_offset: usize,
     pub expanded: HashSet<PathBuf>,
     pub show_all_files: HashSet<PathBuf>,
     pub cursor: usize,
@@ -52,8 +57,10 @@ impl App {
     pub(super) fn new(root: DirNode) -> Self {
         let mut expanded = HashSet::new();
         expanded.insert(root.path.clone());
-        Self {
+        let mut app = Self {
             root,
+            rows: Vec::new(),
+            scroll_offset: 0,
             expanded,
             show_all_files: HashSet::new(),
             cursor: 0,
@@ -61,14 +68,22 @@ impl App {
             delete_state: DeleteState::Normal,
             status: None,
             pending_delete: None,
-        }
+        };
+        app.refresh_rows();
+        app
     }
 
-    pub(super) fn visible_rows(&self) -> Vec<VisibleRow> {
-        let mut rows = Vec::new();
+    /// Rebuild the flattened rows and keep the cursor in range. Call after
+    /// any change to `root`, `expanded`, or `show_all_files`.
+    pub(super) fn refresh_rows(&mut self) {
+        let mut rows = std::mem::take(&mut self.rows);
+        rows.clear();
         let root_size = self.root.total_size;
         self.collect_visible(&self.root, 0, &[], true, root_size, root_size, &mut rows);
-        rows
+        self.rows = rows;
+        if self.cursor >= self.rows.len() {
+            self.cursor = self.rows.len().saturating_sub(1);
+        }
     }
 
     fn collect_visible(
@@ -201,13 +216,6 @@ impl App {
                 file_count: 0,
                 dir_count: 0,
             });
-        }
-    }
-
-    pub(super) fn clamp_cursor(&mut self) {
-        let len = self.visible_rows().len();
-        if self.cursor >= len {
-            self.cursor = len.saturating_sub(1);
         }
     }
 }

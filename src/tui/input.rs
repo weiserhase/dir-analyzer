@@ -28,11 +28,12 @@ impl App {
             self.delete_state = DeleteState::Normal;
         }
 
-        let rows = self.visible_rows();
-        let row_count = rows.len();
+        let row_count = self.rows.len();
         if row_count == 0 {
             return;
         }
+        let rows = &self.rows;
+        let mut changed = false;
 
         match code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
@@ -62,11 +63,9 @@ impl App {
             KeyCode::Right | KeyCode::Char('l') => {
                 if let Some(row) = rows.get(self.cursor) {
                     if row.is_file_cutoff {
-                        if !self.show_all_files.contains(&row.path) {
-                            self.show_all_files.insert(row.path.clone());
-                        }
+                        changed = self.show_all_files.insert(row.path.clone());
                     } else if !row.is_file && row.has_children && !row.is_expanded {
-                        self.expanded.insert(row.path.clone());
+                        changed = self.expanded.insert(row.path.clone());
                     }
                 }
             }
@@ -81,8 +80,7 @@ impl App {
                             }
                         }
                     } else if row.is_expanded {
-                        self.expanded.remove(&row.path);
-                        self.clamp_cursor();
+                        changed = self.expanded.remove(&row.path);
                     } else if row.depth > 0 {
                         for i in (0..self.cursor).rev() {
                             if rows[i].depth < row.depth {
@@ -97,17 +95,15 @@ impl App {
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(row) = rows.get(self.cursor) {
                     if row.is_file_cutoff {
-                        if !self.show_all_files.contains(&row.path) {
-                            self.show_all_files.insert(row.path.clone());
-                        }
+                        changed = self.show_all_files.insert(row.path.clone());
                     } else if !row.is_file && row.has_children {
                         if row.is_expanded {
                             self.expanded.remove(&row.path);
                             self.show_all_files.remove(&row.path);
-                            self.clamp_cursor();
                         } else {
                             self.expanded.insert(row.path.clone());
                         }
+                        changed = true;
                     }
                 }
             }
@@ -117,9 +113,8 @@ impl App {
                     if !row.is_file && !row.is_file_cutoff {
                         let path = row.path.clone();
                         let paths = collect_descendant_paths(&self.root, &path);
-                        for p in paths {
-                            self.expanded.insert(p);
-                        }
+                        self.expanded.extend(paths);
+                        changed = true;
                     }
                 }
             }
@@ -133,7 +128,7 @@ impl App {
                             self.expanded.remove(p);
                             self.show_all_files.remove(p);
                         }
-                        self.clamp_cursor();
+                        changed = true;
                     }
                 }
             }
@@ -150,11 +145,14 @@ impl App {
 
             _ => {}
         }
+
+        if changed {
+            self.refresh_rows();
+        }
     }
 
     fn initiate_delete(&mut self) {
-        let rows = self.visible_rows();
-        if let Some(row) = rows.get(self.cursor) {
+        if let Some(row) = self.rows.get(self.cursor) {
             if row.is_file_cutoff {
                 self.delete_state = DeleteState::Normal;
                 return;
@@ -265,7 +263,7 @@ impl App {
                         self.show_all_files.remove(&pending.path);
                         self.root.remove_dir_at(&pending.path);
                     }
-                    self.clamp_cursor();
+                    self.refresh_rows();
                     let label = if pending.is_file {
                         pending.name
                     } else {

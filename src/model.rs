@@ -59,12 +59,10 @@ impl DirNode {
         if self.path == target {
             return Some(self);
         }
-        for child in &self.children {
-            if let Some(found) = child.find(target) {
-                return Some(found);
-            }
-        }
-        None
+        self.children
+            .iter()
+            .find(|c| target.starts_with(&c.path))
+            .and_then(|c| c.find(target))
     }
 
     pub fn remove_dir_at(&mut self, target: &Path) -> bool {
@@ -73,13 +71,15 @@ impl DirNode {
             self.recalculate();
             return true;
         }
-        for child in &mut self.children {
-            if child.remove_dir_at(target) {
-                self.recalculate();
-                return true;
-            }
+        let removed = self
+            .children
+            .iter_mut()
+            .find(|c| target.starts_with(&c.path))
+            .is_some_and(|c| c.remove_dir_at(target));
+        if removed {
+            self.recalculate();
         }
-        false
+        removed
     }
 
     pub fn remove_file_at(&mut self, target: &Path) -> bool {
@@ -94,13 +94,15 @@ impl DirNode {
             self.recalculate();
             return true;
         }
-        for child in &mut self.children {
-            if child.remove_file_at(target) {
-                self.recalculate();
-                return true;
-            }
+        let removed = self
+            .children
+            .iter_mut()
+            .find(|c| target.starts_with(&c.path))
+            .is_some_and(|c| c.remove_file_at(target));
+        if removed {
+            self.recalculate();
         }
-        false
+        removed
     }
 
     fn recalculate(&mut self) {
