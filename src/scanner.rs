@@ -46,11 +46,43 @@ impl ScanProgress {
     }
 }
 
-pub fn scan(path: &Path, exclude: &RegexSet, progress: &ScanProgress) -> DirNode {
+/// Exclude rules. Patterns containing `/` must match an entry's whole absolute
+/// path (e.g. `/mnt`); all others match anywhere in its name.
+pub struct Exclude {
+    names: RegexSet,
+    paths: RegexSet,
+}
+
+impl Exclude {
+    pub fn new(patterns: &[String]) -> Result<Self, regex::Error> {
+        let (paths, names): (Vec<&String>, Vec<&String>) =
+            patterns.iter().partition(|p| p.contains('/'));
+        Ok(Self {
+            names: RegexSet::new(names)?,
+            paths: RegexSet::new(paths.iter().map(|p| format!("^(?:{p})$")))?,
+        })
+    }
+
+    fn is_match(&self, entry: &DirEntry) -> bool {
+        if !self.names.is_empty() && self.names.is_match(&entry.file_name().to_string_lossy()) {
+            return true;
+        }
+        if !self.paths.is_empty() {
+            let path = entry.path();
+            let path = path.to_string_lossy();
+            #[cfg(windows)]
+            let path = path.replace('\\', "/");
+            return self.paths.is_match(&path);
+        }
+        false
+    }
+}
+
+pub fn scan(path: &Path, exclude: &Exclude, progress: &ScanProgress) -> DirNode {
     scan_recursive(path, exclude, progress)
 }
 
-fn scan_recursive(path: &Path, exclude: &RegexSet, progress: &ScanProgress) -> DirNode {
+fn scan_recursive(path: &Path, exclude: &Exclude, progress: &ScanProgress) -> DirNode {
     progress.dirs.fetch_add(1, Ordering::Relaxed);
 
     let entries = match fs::read_dir(path) {
@@ -85,7 +117,7 @@ fn scan_recursive(path: &Path, exclude: &RegexSet, progress: &ScanProgress) -> D
                 continue;
             }
         };
-        if !exclude.is_empty() && exclude.is_match(&entry.file_name().to_string_lossy()) {
+        if exclude.is_match(&entry) {
             continue;
         }
         match entry.file_type() {

@@ -47,7 +47,12 @@ dir-analyzer [PATH] -e '^target$' -e '\.log$'   # skip matching entries
 
 Options: `-i` interactive, `-d <N>` max depth, `-t <N>` threads, `-e <REGEX>` exclude. Inside the TUI, `dd` then `y` deletes the selected file/directory (permanent, no undo).
 
-`-e/--exclude` takes a regex matched against each file/directory **name** (basename, not the full path) and can be repeated. Excluded directories are pruned entirely — they and their contents don't count toward any totals. For example, `-e '^(target|node_modules)$' -e '^\.git$'`.
+`-e/--exclude` takes a regex and can be repeated. Excluded directories are pruned entirely — they and their contents don't count toward any totals.
+
+- Patterns **without** `/` match anywhere in each file/directory **name**: `-e '^(target|node_modules)$' -e '^\.git$'`.
+- Patterns **with** `/` must match the **whole absolute path**: `-e /mnt` skips exactly `/mnt`, `-e '/home/.*/node_modules'` skips `node_modules` under `/home`.
+
+On WSL, scanning `/` walks into `/mnt/c` etc., which are Windows drives mounted over the slow 9p protocol. Use `dir-analyzer / -e /mnt` to skip them, and run the native Windows binary to scan Windows drives.
 
 ## License
 

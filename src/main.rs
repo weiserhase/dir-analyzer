@@ -32,7 +32,8 @@ struct Cli {
     #[arg(short = 't', long)]
     threads: Option<usize>,
 
-    /// Exclude files/directories whose name matches this regex (repeatable)
+    /// Exclude entries matching this regex (repeatable). Patterns with `/` must
+    /// match the full path, e.g. `/mnt`; others match the name, e.g. `^target$`
     #[arg(short = 'e', long)]
     exclude: Vec<String>,
 }
@@ -52,7 +53,7 @@ fn main() -> Result<()> {
             .ok();
     }
 
-    let exclude = regex::RegexSet::new(&cli.exclude)
+    let exclude = scanner::Exclude::new(&cli.exclude)
         .map_err(|e| anyhow::anyhow!("invalid --exclude regex: {e}"))?;
 
     let start = Instant::now();
